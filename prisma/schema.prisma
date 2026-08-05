@@ -17,7 +17,7 @@ generator client {
 
 // Fonte de dados: a URL vem da variável de ambiente DATABASE_URL.
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
