@@ -1,0 +1,152 @@
+// ============================================================
+// schema.prisma — definição do banco de dados (ORM Prisma).
+//
+// Este arquivo é a fonte de verdade do schema. Depois de alterá-lo,
+// rode `npx prisma generate` para regenerar o cliente e aplique as
+// mudanças no banco (db push ou migrate).
+//
+// Observação: o datasource usa SQLite para desenvolvimento local.
+// Em produção, troque o provider e a DATABASE_URL para PostgreSQL,
+// MySQL ou SQL Server.
+// ============================================================
+
+// Gera o Prisma Client consumido no código (PrismaService estende ele).
+generator client {
+  provider = "prisma-client-js"
+}
+
+// Fonte de dados: a URL vem da variável de ambiente DATABASE_URL.
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ------------------------------------------------------------
+// Empresa — entidade raiz do sistema. Todos os usuários pertencem
+// a uma empresa. `modulosDesativados` guarda um JSON string com os
+// nomes dos módulos desativados para a empresa (ex.: ["pdv"]).
+// ------------------------------------------------------------
+model Empresa {
+  id                 Int       @id @default(autoincrement())
+  nome               String
+  modulosDesativados String? // JSON string opcional
+  users              Usuario[] // relação 1:N com Usuario
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  @@map("empresas") // nome real da tabela no banco
+}
+
+// ------------------------------------------------------------
+// Usuario — usuário do sistema. A senha é guardada como hash bcrypt
+// (nunca em texto puro). O token JWT também pode ser persistido aqui.
+//
+// Relações:
+//   - empresa:        todo usuário pertence a uma empresa;
+//   - perfilAcesso:   perfil RBAC opcional (define as permissões);
+//   - usuarioAlteracao: self-relation que registra QUEM alterou o usuário.
+// ------------------------------------------------------------
+model Usuario {
+  id                 Int           @id @default(autoincrement())
+  nome               String
+  email              String        @unique // e-mail único (P2002 se duplicado)
+  senha              String // hash bcrypt
+  telefone           String?
+  token              String? // último token gerado (opcional)
+  comissao           Float? // comissão em % do usuário
+  ativo              Boolean       @default(true) // soft delete (login bloqueado)
+  onboardingCompleto Boolean       @default(false)
+  empresaId          Int
+  empresa            Empresa       @relation(fields: [empresaId], references: [id])
+  perfilAcessoId     Int?
+  perfilAcesso       PerfilAcesso? @relation(fields: [perfilAcessoId], references: [id])
+  usuarioAlteracaoId Int?
+  // Self-relation "UsuarioAlteracao": o usuário que executou a última alteração.
+  usuarioAlteracao   Usuario?      @relation("UsuarioAlteracao", fields: [usuarioAlteracaoId], references: [id], onDelete: SetNull)
+  usuariosAlterados  Usuario[]     @relation("UsuarioAlteracao")
+  auditorias         Auditoria[] // histórico de auditoria do usuário
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+
+  // Índices para acelerar consultas por empresa e perfil.
+  @@index([empresaId])
+  @@index([perfilAcessoId])
+  @@map("usuarios")
+}
+
+// ------------------------------------------------------------
+// PerfilAcesso — perfil de acesso (RBAC). Ex.: "Administrador",
+// "Supervisor", "Colaborador". Agrupa um conjunto de permissões.
+// O perfil "Administrador" é protegido no service (não editável/excluível).
+// ------------------------------------------------------------
+model PerfilAcesso {
+  id         Int               @id @default(autoincrement())
+  descricao  String            @unique // nome único do perfil
+  status     Boolean           @default(true) // ativo/inativo
+  usuarios   Usuario[] // usuários vinculados
+  permissoes PermissaoPerfil[] // vínculos N:N com Permissao
+  createdAt  DateTime          @default(now())
+  updatedAt  DateTime          @updatedAt
+
+  @@map("perfis_acesso")
+}
+
+// ------------------------------------------------------------
+// Permissao — permissão "chave" do sistema (ex.: GERENCIAR_USUARIOS).
+// As permissões são comparadas pelo PermissionsGuard e pelo login
+// (campo `chave`). São cadastradas via seed (prisma/seed.ts).
+// ------------------------------------------------------------
+model Permissao {
+  id               Int               @id @default(autoincrement())
+  chave            String            @unique // chave única usada no RBAC
+  descricao        String // descrição amigável
+  modulo           String // módulo ao qual pertence (agrupamento)
+  perfilPermissoes PermissaoPerfil[] // vínculos N:N com PerfilAcesso
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+
+  @@map("permissoes")
+}
+
+// ------------------------------------------------------------
+// PermissaoPerfil — tabela de junção N:N entre PerfilAcesso e Permissao.
+// Cada linha representa "este perfil possui esta permissão".
+// onDelete: Cascade remove os vínculos quando o perfil/permissão é apagado.
+// ------------------------------------------------------------
+model PermissaoPerfil {
+  id          Int          @id @default(autoincrement())
+  perfilId    Int
+  perfil      PerfilAcesso @relation(fields: [perfilId], references: [id], onDelete: Cascade)
+  permissaoId Int
+  permissao   Permissao    @relation(fields: [permissaoId], references: [id], onDelete: Cascade)
+
+  // Garante que um mesmo vínculo não seja duplicado.
+  @@unique([perfilId, permissaoId])
+  @@index([permissaoId])
+  @@map("permissao_perfil")
+}
+
+// ------------------------------------------------------------
+// Auditoria — trilha de auditoria (rastreabilidade).
+// Registra ações (LOGIN, CRIAR, ATUALIZAR, EXCLUIR, ...) sobre entidades,
+// com opção de guardar o estado anterior/novo (JSON) para diffs.
+// ------------------------------------------------------------
+model Auditoria {
+  id         Int      @id @default(autoincrement())
+  usuarioId  Int? // quem executou (null para ações de sistema)
+  usuario    Usuario? @relation(fields: [usuarioId], references: [id], onDelete: SetNull)
+  acao       String // ex.: LOGIN, CRIAR, ATUALIZAR...
+  entidade   String // ex.: Usuario, PerfilAcesso
+  entidadeId Int? // id do registro afetado
+  valoresAnt String? // JSON string com o estado anterior
+  valoresNov String? // JSON string com o novo estado
+  ip         String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+
+  // Índices para filtrar por usuário, entidade e período.
+  @@index([usuarioId])
+  @@index([entidade])
+  @@index([createdAt])
+  @@map("auditorias")
+}
