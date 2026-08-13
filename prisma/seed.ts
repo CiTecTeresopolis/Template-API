@@ -12,8 +12,8 @@
 //   - o usuário admin (admin@template.local / Admin@12345).
 // ============================================================
 import 'dotenv/config';
-import { PrismaClient } from '../src/generated/prisma/client';
 import { hash } from 'bcryptjs';
+import { PrismaClient } from '@prisma/client';
 
 const prisma = new PrismaClient();
 
