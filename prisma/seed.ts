@@ -26,7 +26,7 @@ const PERMISSOES = [
     modulo: 'usuarios',
   },
   {
-    chave: 'GERENCIAR_PERFIS_ACESSO',
+    chave: 'GERENCIAR_PERFIL_ACESSO',
     descricao: 'Gerenciar perfis de acesso',
     modulo: 'auth',
   },

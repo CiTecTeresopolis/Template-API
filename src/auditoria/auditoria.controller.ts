@@ -1,5 +1,5 @@
 import { Controller, Get, Query, UseGuards } from '@nestjs/common';
-import { ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { AuthGuard } from '../auth/auth.guard';
 import { PermissionsGuard } from '../common/guards/permissions.guard';
 import { Permissions } from '../common/decorators/permissions.decorator';
@@ -13,6 +13,7 @@ import { FilterAuditoriaDto } from './dto/filter-auditoria.dto';
 // ACESSAR_AUDITORIA.
 // ============================================================
 @ApiTags('auditoria')
+@ApiBearerAuth('access-token')
 @Controller('auditoria')
 export class AuditoriaController {
   constructor(private readonly auditService: AuditService) {}

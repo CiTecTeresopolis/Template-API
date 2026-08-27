@@ -32,9 +32,9 @@ import { UpdatePerfilAcessoDto } from './dto/update-perfil-acesso.dto';
 // ============================================================
 @ApiTags('perfis-acesso')
 @ApiBearerAuth('access-token')
-@Controller('perfis-acesso')
+@Controller('perfil-acesso')
 @UseGuards(AuthGuard, PermissionsGuard)
-@Permissions('GERENCIAR_PERFIS_ACESSO')
+@Permissions('GERENCIAR_PERFIL_ACESSO')
 export class PerfilAcessoController {
   constructor(private readonly service: PerfilAcessoService) {}
 
