@@ -24,7 +24,7 @@ import { UpdatePerfilAcessoDto } from './dto/update-perfil-acesso.dto';
 //
 // Protegido em nível de CLASSE:
 //   @UseGuards(AuthGuard, PermissionsGuard)  -> exige token válido;
-//   @Permissions('GERENCIAR_PERFIS_ACESSO')  -> exige a permissão.
+//   @Permissions('GERENCIAR_PERFIL_ACESSO')  -> exige a permissão.
 // Com isso, TODAS as rotas abaixo herdam essa proteção.
 //
 // Obs.: o header `x-usuario-id` indica quem está executando a ação;
@@ -40,6 +40,7 @@ export class PerfilAcessoController {
 
   // GET /perfis-acesso?page=1&limit=50
   @Get()
+  @Permissions()
   @ApiOperation({ summary: 'Listar todos os perfis de acesso' })
   listar(@Query('page') page?: string, @Query('limit') limit?: string) {
     return this.service.listar(Number(page) || 1, Number(limit) || 50);
@@ -47,6 +48,7 @@ export class PerfilAcessoController {
 
   // GET /perfis-acesso/:id
   @Get(':id')
+  @Permissions()
   @ApiOperation({ summary: 'Buscar perfil de acesso por ID' })
   buscarPorId(@Param('id', ParseIntPipe) id: number) {
     return this.service.buscarPorId(id);

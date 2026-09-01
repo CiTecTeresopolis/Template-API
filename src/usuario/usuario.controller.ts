@@ -210,4 +210,20 @@ export class UsuarioController {
   async concluirOnboarding(@Param('id') id: number): Promise<UsuarioModel> {
     return await this.usuarioService.concluirOnboarding(id);
   }
+
+  // PUT /usuario/perfil/me — atualiza os dados do próprio perfil (profile != role) autenticado
+  @Put('perfil/me')
+  @Permissions()
+  @ApiOperation({ summary: 'Atualiza o próprio perfil do usuário logado' })
+  @ApiResponse({ status: 200, description: 'Perfil atualizado com sucesso!' })
+  async updateOwnProfile(
+    @Headers('x-usuario-id') usuarioId: string,
+    @Body() updateUserDto: UpdateUserDto,
+  ): Promise<UsuarioModel> {
+    return await this.usuarioService.updateUser(
+      Number(usuarioId),
+      updateUserDto,
+      Number(usuarioId),
+    );
+  }
 }

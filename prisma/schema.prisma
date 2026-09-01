@@ -59,7 +59,7 @@ model Usuario {
   empresaId          Int
   empresa            Empresa       @relation(fields: [empresaId], references: [id])
   perfilAcessoId     Int?
-  perfilAcesso       PerfilAcesso? @relation(fields: [perfilAcessoId], references: [id])
+  perfilAcesso       PerfilAcesso? @relation(fields: [perfilAcessoId], references: [id], onDelete: SetNull)
   usuarioAlteracaoId Int?
   // Self-relation "UsuarioAlteracao": o usuário que executou a última alteração.
   usuarioAlteracao   Usuario?      @relation("UsuarioAlteracao", fields: [usuarioAlteracaoId], references: [id], onDelete: SetNull)

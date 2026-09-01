@@ -211,11 +211,10 @@ export class PerfilAcessoService {
     return perfilAtualizado;
   }
 
-  // Exclui um perfil, desde que não seja o Administrador nem tenha usuários.
+// Exclui um perfil, desde que não seja o Administrador nem tenha usuários ATIVOS vinculados.
   async excluir(id: number, usuarioId: number) {
     const perfil = await this.prisma.perfilAcesso.findUnique({
       where: { id },
-      include: { _count: { select: { usuarios: true } } },
     });
 
     if (!perfil) throw new NotFoundException('Perfil de acesso não encontrado');
@@ -226,14 +225,30 @@ export class PerfilAcessoService {
       );
     }
 
-    if (perfil._count.usuarios > 0) {
+    // 1. Verifica se existem usuários ATIVOS usando este perfil
+    const usuariosAtivosCount = await this.prisma.usuario.count({
+      where: {
+        perfilAcessoId: id,
+        ativo: true,
+      },
+    });
+
+    if (usuariosAtivosCount > 0) {
       throw new BadRequestException(
-        `Este perfil possui ${perfil._count.usuarios} usuário(s) vinculado(s). Remova os vínculos antes de excluir.`,
+        `Este perfil possui ${usuariosAtivosCount} usuário(s) ativo(s) vinculado(s). Reatribua ou desative os usuários antes de excluir.`,
       );
     }
 
+    // 2. Se houver apenas usuários desativados (soft-deleted), desvincula o perfil deles
+    await this.prisma.usuario.updateMany({
+      where: { perfilAcessoId: id },
+      data: { perfilAcessoId: null },
+    });
+
+    // 3. Deleta o perfil
     await this.prisma.perfilAcesso.delete({ where: { id } });
 
+    // 4. Registra na trilha de auditoria
     this.auditService.log({
       usuarioId,
       acao: 'EXCLUIR',

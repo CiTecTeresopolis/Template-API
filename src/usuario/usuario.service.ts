@@ -5,7 +5,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { PasswordService } from './password/password.service';
 import { PasswordUpdateDto } from './dto/password-update-dto';
 import { AuditService } from '../auditoria/auditoria.service';
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { Injectable, UnauthorizedException, NotFoundException, BadRequestException } from '@nestjs/common';
 
 // Define a estrutura do objeto de filtro dinamicamente
 interface whereClause {
@@ -14,10 +14,6 @@ interface whereClause {
 
 // ============================================================
 // UsuarioService — lógica de negócio de usuários.
-//
-// Responsável por CRUD, filtros/paginação, ativação/desativação,
-// troca de senha, onboarding e geração de token no cadastro.
-// Praticamente toda mutação gera um registro de auditoria.
 // ============================================================
 @Injectable()
 export class UsuarioService {
@@ -34,10 +30,7 @@ export class UsuarioService {
     empresaId: number,
     usuarioId: number,
   ): Promise<Usuario | { error: string }> {
-    // A senha NUNCA é salva em texto puro: apenas o hash bcrypt.
     const hashedPassword = await this.passwordService.hashPassword(data.senha);
-    // Monta o objeto de criação. `createData` é `any` porque o Prisma
-    // aceita os relacionamentos aninhados (connect).
     const createData: any = {
       nome: data.nome,
       email: data.email,
@@ -45,20 +38,19 @@ export class UsuarioService {
       comissao: data.comissao,
       senha: hashedPassword,
       empresa: { connect: { id: empresaId } },
-      // Registra quem criou o usuário (relação de auditoria).
       usuarioAlteracao: { connect: { id: usuarioId } },
     };
-    // Vincula o perfil de acesso apenas se foi informado.
+
     if (data.perfilAcessoId) {
       createData.perfilAcesso = { connect: { id: data.perfilAcessoId } };
     }
+
     const usuario: Usuario = await this.prisma.usuario.create({
       data: createData,
     });
-    // Gera um token já no cadastro (login automático pós-criação).
+
     const token = this.gerarToken(usuario);
     usuario.token = token.access_token;
-    // Remove a senha do objeto antes de devolver ao cliente.
     delete (usuario as Partial<Usuario>).senha;
 
     this.auditService.log({
@@ -94,8 +86,7 @@ export class UsuarioService {
     }) as any;
   }
 
-  // Retorna um Usuário por Email (inclui perfil + permissões para auth)
-  // Usado no login. Só retorna usuários ATIVOS (ativo: true).
+  // Retorna um Usuário por Email
   async getUserByEmail(email: string): Promise<Usuario> {
     return this.prisma.usuario.findFirst({
       where: { email, ativo: true },
@@ -111,8 +102,7 @@ export class UsuarioService {
     }) as any;
   }
 
-  // Retorna uma lista de Usuários por um filtro
-  // Filtros: nome (busca parcial), email, telefone, ativo.
+  // Retorna uma lista de Usuários por filtro
   async getfilterUsers(
     filtros: {
       nome?: string;
@@ -126,31 +116,16 @@ export class UsuarioService {
     data: any[];
     meta: { total: number; page: number; limit: number; totalPages: number };
   }> {
-    // Monta o where dinamicamente a partir dos filtros recebidos.
     const where: whereClause = {};
     const skip = (page - 1) * limit;
 
-    // Busca parcial (contains) apenas para o nome.
     if (filtros.nome) {
-      where.nome = {
-        contains: filtros.nome,
-      };
+      where.nome = { contains: filtros.nome };
     }
+    if (filtros.email) where.email = filtros.email;
+    if (filtros.telefone) where.telefone = filtros.telefone;
+    if (filtros.ativo !== undefined) where.ativo = filtros.ativo;
 
-    // Demais filtros são busca exata.
-    if (filtros.email) {
-      where.email = filtros.email;
-    }
-
-    if (filtros.telefone) {
-      where.telefone = filtros.telefone;
-    }
-
-    if (filtros.ativo !== undefined) {
-      where.ativo = filtros.ativo;
-    }
-
-    // Projeção explícita: evita retornar a coluna `senha` na listagem.
     const select = {
       id: true,
       nome: true,
@@ -164,7 +139,6 @@ export class UsuarioService {
       perfilAcesso: { select: { id: true, descricao: true } },
     };
 
-    // Consulta + contagem em paralelo para responder o metadata de paginação.
     const [data, total] = await Promise.all([
       this.prisma.usuario.findMany({
         where,
@@ -190,15 +164,56 @@ export class UsuarioService {
   // Atualiza um Usuário
   async updateUser(
     id: number,
-    data: Prisma.UsuarioUpdateInput & { perfilAcessoId?: number | null },
+    data: Prisma.UsuarioUpdateInput & { 
+      perfilAcessoId?: number | null; 
+      senha?: string;
+      senhaAtual?: string;
+    },
     usuarioId: number,
   ): Promise<Usuario> {
     const updateData: any = {
       ...data,
-      // Registra quem executou a alteração.
       usuarioAlteracao: { connect: { id: usuarioId } },
     };
-    // Trata o vínculo de perfil de acesso: null/0 desconecta o perfil.
+
+    const usuarioAntigo = await this.prisma.usuario.findUnique({
+      where: { id },
+    });
+
+    if (!usuarioAntigo) {
+      throw new NotFoundException('Usuário não encontrado.');
+    }
+
+    // 1. Se alterou e-mail ou enviou nova senha, exige e valida a senhaAtual
+    const alterouEmail = data.email && data.email !== usuarioAntigo.email;
+    const alterouSenha = data.senha && typeof data.senha === 'string' && data.senha.trim() !== '';
+
+    if (alterouEmail || alterouSenha) {
+      if (!data.senhaAtual) {
+        throw new BadRequestException('Informe a senha atual para confirmar as alterações.');
+      }
+
+      const senhaValida = await this.passwordService.comparePassword(
+        data.senhaAtual,
+        usuarioAntigo.senha,
+      );
+
+      if (!senhaValida) {
+        throw new UnauthorizedException('A senha atual informada está incorreta.');
+      }
+    }
+
+    // Limpa o campo auxiliar 'senhaAtual' para não quebrar a query do Prisma
+    delete updateData.senhaAtual;
+
+    // 2. Criptografa a nova senha (se fornecida) ou remove o campo do payload
+    if (alterouSenha) {
+      updateData.senha = await this.passwordService.hashPassword(data.senha as string);
+    } else {
+      delete updateData.senha;
+    }
+
+    // 3. Tratamento do Perfil de Acesso
     if (data.perfilAcessoId !== undefined) {
       if (data.perfilAcessoId === null || data.perfilAcessoId === 0) {
         updateData.perfilAcesso = { disconnect: true };
@@ -206,42 +221,39 @@ export class UsuarioService {
         updateData.perfilAcesso = { connect: { id: data.perfilAcessoId } };
       }
     }
-    // remove o campo "cru" do update (o Prisma espera o relacionamento).
     delete updateData.perfilAcessoId;
-    const usuarioAntigo = await this.prisma.usuario.findUnique({
-      where: { id },
-    });
+
     const updated = await this.prisma.usuario.update({
       data: updateData,
       where: { id },
     });
 
+    const foiReativado = !usuarioAntigo.ativo && updated.ativo;
+
     this.auditService.log({
       usuarioId,
-      acao: 'ATUALIZAR',
+      acao: foiReativado ? 'HABILITAR' : 'ATUALIZAR',
       entidade: 'Usuario',
       entidadeId: id,
       valoresAnt: JSON.stringify({
-        nome: usuarioAntigo?.nome,
-        email: usuarioAntigo?.email,
+        nome: usuarioAntigo.nome,
+        email: usuarioAntigo.email,
       }),
-      valoresNov: JSON.stringify({ nome: updated.nome, email: updated.email }),
+      valoresNov: JSON.stringify({
+        nome: updated.nome,
+        email: updated.email,
+      }),
     });
 
     return updated;
   }
 
-  // Desabilita um Usuário (Deleção lógica)
-  // O registro permanece no banco, mas `ativo: false` impede novos logins.
+  // Desabilita um Usuário
   async disableUser(id: number, usuarioId: number): Promise<Usuario> {
     const usuario = await this.prisma.usuario.update({
       data: {
         ativo: false,
-        usuarioAlteracao: {
-          connect: {
-            id: usuarioId,
-          },
-        },
+        usuarioAlteracao: { connect: { id: usuarioId } },
       },
       where: { id },
     });
@@ -251,6 +263,7 @@ export class UsuarioService {
       acao: 'DESABILITAR',
       entidade: 'Usuario',
       entidadeId: id,
+      valoresNov: JSON.stringify({ nome: usuario.nome, email: usuario.email }),
     });
 
     return usuario;
@@ -261,11 +274,7 @@ export class UsuarioService {
     const usuario = await this.prisma.usuario.update({
       data: {
         ativo: true,
-        usuarioAlteracao: {
-          connect: {
-            id: usuarioId,
-          },
-        },
+        usuarioAlteracao: { connect: { id: usuarioId } },
       },
       where: { id },
     });
@@ -275,17 +284,16 @@ export class UsuarioService {
       acao: 'HABILITAR',
       entidade: 'Usuario',
       entidadeId: id,
+      valoresNov: JSON.stringify({ nome: usuario.nome, email: usuario.email }),
     });
 
     return usuario;
   }
 
   // Atualiza a senha de um Usuário
-  // Exige a senha ATUAL para permitir a troca (segurança).
   async updatePassword(id: number, data: PasswordUpdateDto): Promise<boolean> {
     try {
       const usuario = await this.getUserById(id);
-      // Confere se a senha atual informada bate com o hash salvo.
       const compare = await this.passwordService.comparePassword(
         data.senhaAtual,
         usuario.senha,
@@ -298,11 +306,7 @@ export class UsuarioService {
         await this.prisma.usuario.update({
           data: {
             senha: hashedPassword,
-            usuarioAlteracao: {
-              connect: {
-                id: id,
-              },
-            },
+            usuarioAlteracao: { connect: { id: id } },
           },
           where: { id },
         });
@@ -311,7 +315,6 @@ export class UsuarioService {
 
       throw new UnauthorizedException('Senha Inválida!');
     } catch (error) {
-      // Re-throw para que o UnauthorizedException vire 401 de verdade.
       if (error instanceof UnauthorizedException) {
         throw error;
       }
@@ -319,8 +322,7 @@ export class UsuarioService {
     }
   }
 
-  // Atualiza a senha de um Usuário sem a senha atual
-  // Uso administrativo/reset de senha.
+  // Reset de senha administrativo
   async updatePasswordWithoutPassword(
     id: number,
     data: PasswordUpdateDto,
@@ -343,7 +345,7 @@ export class UsuarioService {
     }
   }
 
-  // Gera um token JWT simples (usado no cadastro de usuário).
+  // Gera token JWT
   gerarToken(payload: { email: string }) {
     return {
       access_token: this.jwtService.sign(
@@ -357,7 +359,7 @@ export class UsuarioService {
     };
   }
 
-  // Marca o onboarding do usuário como concluído.
+  // Concluir Onboarding
   async concluirOnboarding(id: number): Promise<Usuario> {
     return this.prisma.usuario.update({
       where: { id },
